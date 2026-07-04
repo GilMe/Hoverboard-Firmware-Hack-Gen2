@@ -255,12 +255,226 @@ const float lookUpTableAngle[181] =
   -1
 };
 
+#if defined(TEST_BUZZER) || defined(TEST_HALL)
+//----------------------------------------------------------------------------
+// Shared bring-up helpers (motor-safe tests)
+//----------------------------------------------------------------------------
+static void DWT_Delay_Init(void)
+{
+	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	DWT->CYCCNT = 0;
+	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static void delay_us(uint32_t us)
+{
+	uint32_t start = DWT->CYCCNT;
+	uint32_t ticks = us * (SystemCoreClock / 1000000U);
+	while ((DWT->CYCCNT - start) < ticks) { }
+}
+
+//----------------------------------------------------------------------------
+// Deliberately own the free watchdog with a generous timeout.
+//
+// The GD32 free watchdog (FWDGT) cannot be disabled once running, and it stays
+// latched on across resets until a true power-on reset. Rather than fight it,
+// we configure it ourselves with a long timeout (~6.5s) so a single reload per
+// main-loop iteration is enough. This keeps delay_us/delay_ms as pure delays
+// and gives exactly one obvious "I'm alive" reload point in each test loop.
+//----------------------------------------------------------------------------
+static void WatchdogInit(void)
+{
+	// 40kHz IRC / 64 = 625 Hz; reload 4095 -> 4095/625 ≈ 6.5s timeout.
+	fwdgt_config(0x0FFF, FWDGT_PSC_DIV64);
+	fwdgt_enable();
+	fwdgt_counter_reload();
+}
+
+static void delay_ms(uint32_t ms)
+{
+	while (ms--)
+	{
+		delay_us(1000);
+	}
+}
+
+//----------------------------------------------------------------------------
+// Plays a square-wave tone on the buzzer pin
+//----------------------------------------------------------------------------
+static void BuzzerTone(uint32_t freqHz, uint32_t durationMs)
+{
+	uint32_t halfPeriodUs;
+	uint32_t toggles;
+	uint32_t i;
+
+	if (freqHz == 0)
+	{
+		gpio_bit_write(BUZZER_PORT, BUZZER_PIN, RESET);
+		delay_ms(durationMs);
+		return;
+	}
+
+	halfPeriodUs = 500000U / freqHz;
+	toggles = (durationMs * 1000U) / halfPeriodUs;
+
+	for (i = 0; i < toggles; i++)
+	{
+		gpio_bit_write(BUZZER_PORT, BUZZER_PIN, (i & 1) ? RESET : SET);
+		delay_us(halfPeriodUs);
+	}
+
+	gpio_bit_write(BUZZER_PORT, BUZZER_PIN, RESET);
+}
+#endif
+
+#ifdef TEST_BUZZER
+//----------------------------------------------------------------------------
+// Buzzer bring-up test (motor-safe)
+// Only the buzzer pin is configured, so the motor bridge is never touched.
+// Powered from the ST-Link 3.3V, no battery required.
+//----------------------------------------------------------------------------
+void RunBuzzerTest(void)
+{
+	SystemCoreClockUpdate();
+	DWT_Delay_Init();
+	WatchdogInit();
+
+	// Configure ONLY the buzzer pin. Motor/PWM pins are left untouched.
+	rcu_periph_clock_enable(RCU_GPIOB);
+	gpio_mode_set(BUZZER_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, BUZZER_PIN);
+	gpio_output_options_set(BUZZER_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, BUZZER_PIN);
+	gpio_bit_write(BUZZER_PORT, BUZZER_PIN, RESET);
+
+	while (1)
+	{
+		fwdgt_counter_reload();
+
+		// Rising three-tone chirp, repeated once per second
+		BuzzerTone(1000, 150);
+		delay_ms(80);
+		BuzzerTone(2000, 150);
+		delay_ms(80);
+		BuzzerTone(3000, 150);
+		delay_ms(800);
+	}
+}
+#endif
+
+#ifdef TEST_HALL
+//----------------------------------------------------------------------------
+// Hall sensor diagnostic test (motor-safe)
+// Polls hall sensors and beeps on state change. Globals visible in SWD watch.
+//----------------------------------------------------------------------------
+static const uint8_t hall_to_pos[8] =
+{
+	0, 3, 5, 4, 1, 2, 6, 0,
+};
+
+// Updated here for SWD live-watch (defined in bldc.c for normal firmware)
+extern uint8_t hall_a;
+extern uint8_t hall_b;
+extern uint8_t hall_c;
+extern uint8_t hall;
+extern uint8_t pos;
+
+// One unique pitch per hall state (1-6). Hear pitch = know state instantly.
+// Spaced ~200 Hz apart so they are clearly distinguishable on a passive buzzer.
+static const uint32_t hallStateTone[8] =
+{
+	0,    // state 0 - invalid (not used, gets warning tone)
+	500,  // state 1
+	700,  // state 2
+	900,  // state 3
+	1100, // state 4
+	1400, // state 5
+	1800, // state 6
+	0,    // state 7 - invalid (not used, gets warning tone)
+};
+
+void RunHallTest(void)
+{
+	uint8_t lastHall = 0xFF;
+
+	SystemCoreClockUpdate();
+	DWT_Delay_Init();
+	WatchdogInit();
+
+	// Configure buzzer output and hall inputs. Motor/PWM pins untouched.
+	rcu_periph_clock_enable(RCU_GPIOB);
+	rcu_periph_clock_enable(RCU_GPIOC);
+	rcu_periph_clock_enable(RCU_GPIOF);
+
+	// Assert self-hold latch so the board stays powered after the button is
+	// released. This drives PB2 only (a latch GPIO), never the motor bridge.
+	gpio_mode_set(SELF_HOLD_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, SELF_HOLD_PIN);
+	gpio_output_options_set(SELF_HOLD_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_10MHZ, SELF_HOLD_PIN);
+	gpio_bit_write(SELF_HOLD_PORT, SELF_HOLD_PIN, SET);
+
+	gpio_mode_set(BUZZER_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, BUZZER_PIN);
+	gpio_output_options_set(BUZZER_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_50MHZ, BUZZER_PIN);
+	gpio_bit_write(BUZZER_PORT, BUZZER_PIN, RESET);
+
+	gpio_mode_set(HALL_A_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE, HALL_A_PIN);
+	gpio_mode_set(HALL_B_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE, HALL_B_PIN);
+	gpio_mode_set(HALL_C_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE, HALL_C_PIN);
+
+	// Startup scale once so we know the test is running. (delay_us feeds watchdog.)
+	BuzzerTone(500,  150); delay_ms(60);
+	BuzzerTone(700,  150); delay_ms(60);
+	BuzzerTone(900,  150); delay_ms(60);
+	BuzzerTone(1100, 150); delay_ms(60);
+	BuzzerTone(1400, 150); delay_ms(60);
+	BuzzerTone(1800, 150); delay_ms(60);
+	BuzzerTone(2400, 400); delay_ms(300);
+
+	// Poll halls; beep a unique pitch per state on every change.
+	while (1)
+	{
+		hall_a = gpio_input_bit_get(HALL_A_PORT, HALL_A_PIN);
+		hall_b = gpio_input_bit_get(HALL_B_PORT, HALL_B_PIN);
+		hall_c = gpio_input_bit_get(HALL_C_PORT, HALL_C_PIN);
+		hall = hall_a * 1 + hall_b * 2 + hall_c * 4;
+		pos = hall_to_pos[hall];
+
+		if (hall != lastHall)
+		{
+			if (hall >= 1 && hall <= 6)
+			{
+				// Unique pitch per state — no counting needed
+				BuzzerTone(hallStateTone[hall], 120);
+			}
+			else
+			{
+				// Invalid state (0 or 7): low double warble
+				BuzzerTone(200, 250);
+				delay_ms(80);
+				BuzzerTone(200, 250);
+			}
+
+			lastHall = hall;
+		}
+
+		fwdgt_counter_reload();
+		delay_ms(5);
+	}
+}
+#endif
 
 //----------------------------------------------------------------------------
 // MAIN function
 //----------------------------------------------------------------------------
 int main (void)
 {
+#ifdef TEST_BUZZER
+	// Motor-safe buzzer bring-up test. Never returns.
+	RunBuzzerTest();
+#endif
+
+#ifdef TEST_HALL
+	// Motor-safe hall sensor diagnostic. Never returns.
+	RunHallTest();
+#endif
+
 #ifdef MASTER
 	FlagStatus enable = RESET;
 	FlagStatus enableSlave = RESET;

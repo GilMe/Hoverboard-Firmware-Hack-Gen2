@@ -40,8 +40,15 @@
 
 // ################################################################################
 
+// ---- Bring-up / bench tests ----
+// TEST_BUZZER / TEST_HALL are defined per PlatformIO environment (see
+// platformio.ini): build env "test_buzzer" or "test_hall". The normal
+// application env "GD32F130C8T6" defines neither.
+
+// ################################################################################
+
 #define PWM_FREQ         		16000     // PWM frequency in Hz
-#define DEAD_TIME        		60        // PWM deadtime (60 = 1µs, measured by oscilloscope)
+#define DEAD_TIME        		60        // PWM deadtime (60 = 1ùs, measured by oscilloscope)
 
 #define DC_CUR_LIMIT     		15        // Motor DC current limit in amps
 
