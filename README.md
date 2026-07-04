@@ -29,8 +29,11 @@ https://github.com/flo199213/Hoverboard-Firmware-Hack-Gen2/blob/master/Schematic
 ---
 
 #### Flashing
-The firmware is built with Keil (free up to 32KByte). To build the firmware, open the Keil project file which is includes in repository. Right to the STM32, there is a debugging header with GND, 3V3, SWDIO and SWCLK. Connect GND, SWDIO and SWCLK to your SWD programmer, like the ST-Link found on many STM devboards.
+
+**PlatformIO on Windows (recommended):** see [HoverBoardGigaDevice/README.md](HoverBoardGigaDevice/README.md) for step-by-step setup, build, and upload with VS Code and PlatformIO.
+
+**Keil (original method):** The firmware can also be built with Keil (free up to 32KByte). Open the Keil project file included in the repository. Right to the MCU, there is a debugging header with GND, 3V3, SWDIO and SWCLK. Connect GND, SWDIO and SWCLK to your SWD programmer, like the ST-Link found on many STM devboards.
 
 - If you never flashed your mainboard before, the controller is locked. To unlock the flash, use STM32 ST-LINK Utility or openOCD.
-- To flash the STM32, use the STM32 ST-LINK Utility as well, ST-Flash utility or Keil by itself.
+- To flash the GD32, use STM32 ST-LINK Utility, st-flash, Keil, or PlatformIO (see link above).
 - Hold the powerbutton while flashing the firmware, as the controller releases the power latch and switches itself off during flashing
