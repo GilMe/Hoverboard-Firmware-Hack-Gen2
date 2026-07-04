@@ -460,6 +460,100 @@ void RunHallTest(void)
 }
 #endif
 
+#ifdef TEST_MOTOR
+//----------------------------------------------------------------------------
+// Motor bring-up test (uses the REAL firmware drive path)
+//
+// Reuses the actual firmware init (GPIO_init / ADC_init / PWM_init) and the
+// interrupt-driven CalculateBLDC() commutation + per-cycle current chopping.
+// Only the input is replaced: instead of USART steering, a gentle capped PWM
+// profile ramps the motor up and down in both directions.
+//
+// SAFETY:
+//  - Keep the wheel OFF THE GROUND for the first runs.
+//  - DC_CUR_LIMIT is reduced (see platformio.ini) so current chopping caps
+//    current low even if commutation is wrong for this board.
+//  - PWM is capped at MOTOR_TEST_PWM. Keep it small; raise only once it spins
+//    smoothly and currentDC stays low.
+//----------------------------------------------------------------------------
+#ifndef MOTOR_TEST_PWM
+#define MOTOR_TEST_PWM 150   // max |pwm| out of 1000 during the test
+#endif
+
+// One 10ms housekeeping tick: keep timeout cleared and watchdog fed.
+static void MotorTick(void)
+{
+	ResetTimeout();
+	fwdgt_counter_reload();
+	Delay(1);   // SysTick runs at 100Hz -> 10ms
+}
+
+// Hold a pwm value for (ticks * 10ms).
+static void MotorHold(int16_t pwm, uint32_t ticks)
+{
+	uint32_t i;
+	SetPWM(pwm);
+	for (i = 0; i < ticks; i++)
+	{
+		MotorTick();
+	}
+}
+
+// Ramp pwm from 'from' to 'to' in small steps (10ms per 5-unit step).
+static void MotorRamp(int16_t from, int16_t to)
+{
+	int16_t step = (to >= from) ? 5 : -5;
+	int16_t p = from;
+
+	while (p != to)
+	{
+		p += step;
+		if ((step > 0 && p > to) || (step < 0 && p < to))
+		{
+			p = to;
+		}
+		SetPWM(p);
+		MotorTick();
+	}
+}
+
+void RunMotorTest(void)
+{
+	SystemCoreClockUpdate();
+	SysTick_Config(SystemCoreClock / 100);   // 10ms system tick (firmware value)
+
+	Watchdog_init();
+	Interrupt_init();
+	TimeoutTimer_init();
+	GPIO_init();
+
+	// Keep the board powered without holding the button.
+	gpio_bit_write(SELF_HOLD_PORT, SELF_HOLD_PIN, SET);
+
+	ADC_init();
+	PWM_init();
+
+	// Let the ADC current-offset calibration settle before enabling drive.
+	MotorHold(0, 60);   // 600ms at zero pwm, drive still disabled below
+
+	// Enable the bridge (drive command is still zero at this point).
+	SetEnable(SET);
+
+	while (1)
+	{
+		MotorRamp(0, MOTOR_TEST_PWM);       // gentle spin up, forward
+		MotorHold(MOTOR_TEST_PWM, 100);     // hold ~1s
+		MotorRamp(MOTOR_TEST_PWM, 0);       // spin down
+		MotorHold(0, 100);                  // rest ~1s
+
+		MotorRamp(0, -MOTOR_TEST_PWM);      // gentle spin up, reverse
+		MotorHold(-MOTOR_TEST_PWM, 100);    // hold ~1s
+		MotorRamp(-MOTOR_TEST_PWM, 0);      // spin down
+		MotorHold(0, 150);                  // rest ~1.5s
+	}
+}
+#endif
+
 //----------------------------------------------------------------------------
 // MAIN function
 //----------------------------------------------------------------------------
@@ -473,6 +567,11 @@ int main (void)
 #ifdef TEST_HALL
 	// Motor-safe hall sensor diagnostic. Never returns.
 	RunHallTest();
+#endif
+
+#ifdef TEST_MOTOR
+	// Motor bring-up test using the real firmware drive path. Never returns.
+	RunMotorTest();
 #endif
 
 #ifdef MASTER

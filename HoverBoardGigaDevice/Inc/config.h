@@ -50,7 +50,9 @@
 #define PWM_FREQ         		16000     // PWM frequency in Hz
 #define DEAD_TIME        		60        // PWM deadtime (60 = 1ùs, measured by oscilloscope)
 
-#define DC_CUR_LIMIT     		15        // Motor DC current limit in amps
+#ifndef DC_CUR_LIMIT
+#define DC_CUR_LIMIT     		15        // Motor DC current limit in amps (override per env, e.g. bench tests)
+#endif
 
 // ################################################################################
 
